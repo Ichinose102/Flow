@@ -47,4 +47,4 @@ De base, l'Arduino Uno ne peut pas simuler nativement un clavier ou une souris (
 ### 2. Logiciel (Python)
 Installe les dépendances nécessaires avec la commande suivante :
 ```bash
-pip install pyserial pyautogui psutil matplotlib
+pip install pyserial pyautogui psutil matplotlib 
