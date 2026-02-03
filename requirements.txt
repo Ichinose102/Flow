@@ -1,0 +1,5 @@
+pyserial
+pyautogui
+psutil
+GPUtil
+matplotlib
