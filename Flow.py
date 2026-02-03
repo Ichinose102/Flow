@@ -1,171 +1,145 @@
 import serial
+import serial.tools.list_ports
 import pyautogui
 import tkinter as tk
 from tkinter import Toplevel
 from threading import Thread
-import os
-import psutil
-import GPUtil
-import time
+import os, psutil, time
 from datetime import datetime
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from collections import deque
 
 # --- CONFIGURATION ---
-PORT_SERIE = 'COM5' 
 BAUD_RATE = 9600
+COLOR_BG       = "#2E3B55" # Fond bleu nuit
+COLOR_CARD_PC  = "#3E4C6D" # Fond carte monitoring
+COLOR_TEXT     = "#FFFFFF"
+COLOR_ACCENT   = "#A9D8F5" # Bleu Miku
+COLOR_KIANA    = "#7D67A6" # Violet Kiana
 
-# --- PALETTE DE COULEURS DYNAMIQUE (Kiana & Miku) ---
-COLOR_BG       = "#2E3B55" # Bleu Nuit (Fond)
-COLOR_STATS    = "#3E4C6D" # Fond des barres
-COLOR_TEXT     = "#FFFFFF" # Blanc
-COLOR_ACCENT   = "#85C1E9" # Bleu Miku (Heure/Statut)
-COLOR_TEMP_DEF = "#7D67A6" # Violet (Initial)
-
-# HISTORIQUES POUR LES GRAPHIQUES (Analytics)
 history_temp = deque([20.0]*150, maxlen=150)
 history_hum  = deque([50.0]*150, maxlen=150)
 
-def get_temp_color(temp):
-    """ Logique de changement de couleur selon tes palettes """
-    if temp <= 18: return "#85C1E9" # Bleu Miku (Froid)
-    if temp <= 23: return "#7D67A6" # Violet Kiana (Confort)
-    if temp <= 26: return "#F39C12" # Orange Flamescion (Chaud)
-    return "#FF4522"                # Rouge Herrscher (Alerte)
+# --- FONCTION UI POUR BORDS ARRONDIS ---
+def create_rounded_rect(canvas, x1, y1, x2, y2, radius, **kwargs):
+    points = [x1+radius, y1, x1+radius, y1, x2-radius, y1, x2-radius, y1, x2, y1, x2, y1+radius, x2, y1+radius, x2, y2-radius, x2, y2-radius, x2, y2, x2-radius, y2, x2-radius, y2, x1+radius, y2, x1+radius, y2, x1, y2, x1, y2-radius, x1, y2-radius, x1, y1+radius, x1, y1+radius, x1, y1]
+    return canvas.create_polygon(points, **kwargs, smooth=True)
 
-# --- INTERFACE GRAPHIQUE ---
+# --- INTERFACE ---
 root = tk.Tk()
-root.title("FLOW Dashboard")
-root.geometry("400x520")
+root.title("FLOW")
+root.geometry("450x580")
 root.configure(bg=COLOR_BG)
-root.attributes("-topmost", True) # Reste au-dessus des fenêtres
+root.attributes("-topmost", True)
 
-# Titre FLOW centré
-label_title = tk.Label(root, text="FLOW", font=("Segoe UI", 26, "bold"), fg=COLOR_TEXT, bg=COLOR_BG)
-label_title.pack(pady=(15, 0))
+# Header : FLOW centré et Heure en GRAS
+header_frame = tk.Frame(root, bg=COLOR_BG)
+header_frame.pack(pady=20, fill="x")
 
-# Horloge Digitale
-label_clock = tk.Label(root, text="00:00:00", font=("Segoe UI", 14, "bold"), fg=COLOR_ACCENT, bg=COLOR_BG)
-label_clock.pack(pady=5)
+tk.Label(header_frame, text="FLOW", font=("Segoe UI", 32, "bold"), fg=COLOR_TEXT, bg=COLOR_BG).pack()
+label_clock = tk.Label(header_frame, text="00:00:00", font=("Segoe UI", 18, "bold"), fg=COLOR_ACCENT, bg=COLOR_BG)
+label_clock.pack()
 
-# Zone des Capteurs Arduino
-sensor_frame = tk.Frame(root, bg=COLOR_BG)
-sensor_frame.pack(pady=10, fill="x", padx=20)
+# --- ZONE CARTES (TEMP & HUMIDITÉ) ---
+card_frame = tk.Frame(root, bg=COLOR_BG)
+card_frame.pack(pady=10, padx=20, fill="x")
 
-# Bloc Température (Dynamique)
-temp_box = tk.Frame(sensor_frame, bg=COLOR_TEMP_DEF, padx=10, pady=10)
-temp_box.pack(side="left", expand=True, fill="both", padx=5)
-label_temp = tk.Label(temp_box, text="--°C", font=("Segoe UI", 26, "bold"), fg="white", bg=COLOR_TEMP_DEF)
-label_temp.pack()
-label_temp_sub = tk.Label(temp_box, text="TEMPÉRATURE", font=("Segoe UI", 8), fg="white", bg=COLOR_TEMP_DEF)
-label_temp_sub.pack()
+def make_sensor_card(parent, title, color):
+    c = tk.Canvas(parent, width=190, height=130, bg=COLOR_BG, highlightthickness=0)
+    c.pack(side="left", padx=10, expand=True)
+    create_rounded_rect(c, 0, 0, 190, 130, 25, fill=color)
+    val_text = c.create_text(95, 55, text="--", font=("Segoe UI", 32, "bold"), fill="white")
+    c.create_text(95, 95, text=title, font=("Segoe UI", 12, "bold"), fill="white")
+    return c, val_text
 
-# Bloc Humidité
-hum_box = tk.Frame(sensor_frame, bg="#5DADE2", padx=10, pady=10)
-hum_box.pack(side="right", expand=True, fill="both", padx=5)
-label_hum = tk.Label(hum_box, text="--%", font=("Segoe UI", 26, "bold"), fg="white", bg="#5DADE2")
-label_hum.pack()
-tk.Label(hum_box, text="HUMIDITÉ", font=("Segoe UI", 8), fg="white", bg="#5DADE2").pack()
+canvas_temp, text_temp = make_sensor_card(card_frame, "TEMP", COLOR_KIANA)
+canvas_hum, text_hum = make_sensor_card(card_frame, "HUMIDITÉ", "#5DADE2")
 
-# Monitoring PC (Barres de progression)
-pc_frame = tk.Frame(root, bg=COLOR_STATS, pady=15, padx=20)
-pc_frame.pack(pady=10, fill="x", padx=20)
+# --- ZONE MONITORING (Bords arrondis) ---
+monitor_canvas = tk.Canvas(root, width=400, height=150, bg=COLOR_BG, highlightthickness=0)
+monitor_canvas.pack(pady=20)
+create_rounded_rect(monitor_canvas, 0, 0, 400, 150, 30, fill=COLOR_CARD_PC)
 
-def create_bar(parent, text):
-    tk.Label(parent, text=text, font=("Segoe UI", 9), fg="white", bg=COLOR_STATS).pack(anchor="w")
-    canv = tk.Canvas(parent, width=300, height=8, bg="#25324D", highlightthickness=0)
-    canv.pack(pady=(2, 8))
-    rect = canv.create_rectangle(0, 0, 0, 8, fill=COLOR_ACCENT, outline="")
-    return canv, rect
+label_cpu = monitor_canvas.create_text(200, 50, text="CPU UTILIZATION: 0.0%", font=("Segoe UI", 11, "bold"), fill="white")
+label_ram = monitor_canvas.create_text(200, 90, text="RAM USAGE: 0.0%", font=("Segoe UI", 11, "bold"), fill="white")
 
-canv_cpu, rect_cpu = create_bar(pc_frame, "UTILISATION CPU")
-canv_ram, rect_ram = create_bar(pc_frame, "MÉMOIRE RAM")
-label_gpu = tk.Label(pc_frame, text="GPU LOAD: --%", font=("Segoe UI", 9), fg=COLOR_ACCENT, bg=COLOR_STATS)
-label_gpu.pack(anchor="w")
+label_status = tk.Label(root, text="RECHERCHE ARDUINO...", font=("Segoe UI", 9), fg="orange", bg=COLOR_BG)
+label_status.pack(side="bottom", pady=10)
 
-# Barre de statut finale
-label_status = tk.Label(root, text="INITIALISATION...", font=("Segoe UI", 9, "bold"), fg=COLOR_ACCENT, bg=COLOR_BG)
-label_status.pack(side="bottom", pady=15)
+# --- LOGIQUE DE COMMANDE ---
+def execute_command(data):
+    if "IR:" in data:
+        code = data.split(":")[1].strip().upper()
+        # Mappage des boutons
+        if code == "BA45FF00":   os.system("shutdown /s /t 1")    # Bouton ARRÊT -> Shutdown PC
+        elif code == "B946FF00": pyautogui.press('volumeup')      # Vol +
+        elif code == "EA15FF00": pyautogui.press('volumedown')    # Vol -
+        elif code == "BF40FF00": pyautogui.press('playpause')     # Pause/Play
+        elif code == "BC43FF00": pyautogui.press('nexttrack')     # Suivant
+        elif code == "BB44FF00": pyautogui.press('prevtrack')     # Avant
+        elif code == "E619FF00": os.system("start spotify")       # Bouton EQ -> Spotify
+        elif code == "E718FF00": os.system("start notion://")     # Bouton 2 -> Notion
+        elif code == "993BFE28": show_graphs()                    # Bouton 3 -> Analytics
+        
+    elif "RFID" in data:
+        os.system('rundll32.exe user32.dll,LockWorkStation')     # Verrouillage session
 
-# --- FONCTIONS LOGIQUES ---
+    elif "TEMP" in data:
+        try:
+            val = data.split(":")[1]
+            canvas_temp.itemconfig(text_temp, text=f"{val}°C")
+            history_temp.append(float(val))
+        except: pass
+    elif "HUM" in data:
+        try:
+            val = data.split(":")[1]
+            canvas_hum.itemconfig(text_hum, text=f"{val}%")
+            history_hum.append(float(val))
+        except: pass
 
 def show_graphs():
-    """ Affiche la fenêtre Analytics (Bouton 3) """
     try:
         graph_win = Toplevel(root)
-        graph_win.title("FLOW - Analytics")
-        graph_win.geometry("500x450")
+        graph_win.title("Analytics")
         graph_win.configure(bg=COLOR_BG)
-        
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(5, 4), facecolor=COLOR_BG)
-        fig.subplots_adjust(hspace=0.6)
-        
-        for ax, data, title, col in zip([ax1, ax2], [history_temp, history_hum], ["Température (°C)", "Humidité (%)"], ["#FF4522", "#5DADE2"]):
-            ax.set_facecolor(COLOR_STATS)
-            ax.plot(list(data), color=col, linewidth=2)
-            ax.set_title(title, color="white", fontsize=10, fontweight='bold')
-            ax.tick_params(colors='white', labelsize=8)
-            ax.grid(color=COLOR_BG, linestyle='--', alpha=0.3)
-
+        fig, ax = plt.subplots(figsize=(5, 3), facecolor=COLOR_BG)
+        ax.set_facecolor(COLOR_CARD_PC)
+        ax.plot(list(history_temp), color=COLOR_ACCENT)
+        ax.tick_params(colors='white')
         canvas = FigureCanvasTkAgg(fig, master=graph_win)
         canvas.draw()
-        canvas.get_tk_widget().pack(pady=10)
-    except Exception as e: print(f"Erreur Graph : {e}")
-
-def update_pc_stats():
-    """ Mise à jour des infos Windows """
-    try:
-        label_clock.config(text=datetime.now().strftime("%H:%M:%S"))
-        # CPU & RAM
-        cpu_p = psutil.cpu_percent()
-        ram_p = psutil.virtual_memory().percent
-        canv_cpu.coords(rect_cpu, 0, 0, (cpu_p * 3), 8)
-        canv_ram.coords(rect_ram, 0, 0, (ram_p * 3), 8)
-        # GPU
-        gpus = GPUtil.getGPUs()
-        label_gpu.config(text=f"GPU LOAD: {int(gpus[0].load*100)}%" if gpus else "GPU: IDLE")
-    except: pass
-    root.after(1000, update_pc_stats)
-
-def interpreter(data):
-    """ Analyse les messages venant de l'Arduino """
-    try:
-        if "RFID" in data:
-            os.system('rundll32.exe user32.dll,LockWorkStation')
-        elif "TEMP" in data:
-            val = float(data.split(":")[1])
-            c = get_temp_color(val)
-            temp_box.config(bg=c)
-            label_temp.config(text=f"{val}°C", bg=c)
-            label_temp_sub.config(bg=c)
-            history_temp.append(val)
-        elif "HUM" in data:
-            val = float(data.split(":")[1])
-            label_hum.config(text=f"{val}%")
-            history_hum.append(val)
-        elif "IR" in data:
-            code = data.split(":")[1].upper().strip()
-            if code == "B946FF00": pyautogui.press('volumeup')
-            elif code == "EA15FF00": pyautogui.press('volumedown')
-            elif code == "E718FF00": os.system("start notion://") # Bouton 2
-            elif code == "A15EFF00": show_graphs()                # Bouton 3
+        canvas.get_tk_widget().pack()
     except: pass
 
-def serial_loop():
-    """ Connexion série sécurisée avec reconnexion auto """
+def update_ui():
+    label_clock.config(text=datetime.now().strftime("%H:%M:%S"))
+    cpu = psutil.cpu_percent()
+    ram = psutil.virtual_memory().percent
+    monitor_canvas.itemconfig(label_cpu, text=f"CPU UTILIZATION: {cpu}%")
+    monitor_canvas.itemconfig(label_ram, text=f"RAM USAGE: {ram}%")
+    root.after(1000, update_ui)
+
+def serial_thread():
     while True:
         try:
-            with serial.Serial(PORT_SERIE, BAUD_RATE, timeout=1) as ser:
-                label_status.config(text="SYSTEM READY", fg=COLOR_ACCENT)
-                while True:
-                    line = ser.readline().decode('utf-8', errors='ignore').strip()
-                    if line: root.after(10, interpreter, line)
-        except:
-            label_status.config(text="SEARCHING ARDUINO...", fg="orange")
-            time.sleep(5)
+            ports = serial.tools.list_ports.comports()
+            target = next((p.device for p in ports if any(x in p.description for x in ["Arduino", "USB-Serial", "CH340"])), None)
+            if target:
+                with serial.Serial(target, BAUD_RATE, timeout=0.01) as ser:
+                    ser.flushInput()
+                    label_status.config(text=f"CONNECTED: {target}", fg=COLOR_ACCENT)
+                    while True:
+                        if ser.in_waiting > 0:
+                            line = ser.readline().decode('utf-8', errors='ignore').strip()
+                            if line: root.after(0, execute_command, line)
+                        else:
+                            time.sleep(0.001)
+            else:
+                label_status.config(text="NO ARDUINO FOUND", fg="orange")
+                time.sleep(2)
+        except: time.sleep(2)
 
-# --- LANCEMENT ---
-update_pc_stats()
-Thread(target=serial_loop, daemon=True).start()
+update_ui()
+Thread(target=serial_thread, daemon=True).start()
 root.mainloop()
